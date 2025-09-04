@@ -166,7 +166,7 @@ exports.sendOTP = async (req, res) => {
       apikey: process.env.SMS_API_KEY,
       senderid: process.env.SMS_SENDER,
       number: mobile,
-      message: `Your OTP is ${otp}. It will expire in 10 minutes. - Dess Disclosures App`,
+      message: `Your OTP to register device with Dess Digital Meetings is ${otp} Do NOT share this OTP with anyone. Dess`,
       format: 'json'
     };
 
@@ -280,7 +280,7 @@ exports.sendOTPRegistration = async (req, res) => {
       apikey: process.env.SMS_API_KEY,   // keep it safe in .env
       senderid: process.env.SMS_SENDER,  // keep in .env
       number: mobile, // assuming DIN is actually a mobile number here
-      message: `Your OTP is ${otp}. It will expire in 10 minutes.`,
+      message: `Your OTP to register device with Dess Digital Meetings is ${otp} Do NOT share this OTP with anyone. Dess`,
       format: 'json'
     };
 
