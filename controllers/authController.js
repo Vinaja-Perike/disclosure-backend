@@ -34,7 +34,7 @@ exports.register = async (req, res) => {
 };
 
 exports.login = async (req, res) => {
-  const { identifier, password } = req.body; // Both fields required
+  const { identifier, password } = req.body; 
 
   try {
     const [rows] = await pool.query(
