@@ -133,12 +133,33 @@ exports.submitDisclosure = async (req, res) => {
     recipient_id,
     details,
     din,
-    emails,
     director_name,
     company_name,
     director_position
-  } = req.body; // Now these come from client request
+  } = req.body;
+  const file = req.file;
+  let { emails } = req.body;
 
+  if (typeof emails === 'string') {
+    const trimmed = emails.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        emails = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        emails = trimmed ? [trimmed] : [];
+      }
+    } else {
+      emails = trimmed ? [trimmed] : [];
+    }
+  } else if (!Array.isArray(emails)) {
+    emails = [];
+  }
+  emails = Array.from(new Set(
+    emails
+      .map(e => String(e).trim().toLowerCase())
+      .filter(Boolean)
+  ));
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -180,7 +201,7 @@ exports.submitDisclosure = async (req, res) => {
 
     const disclosure_id = result.insertId;
 
-    console.log(disclosure_id);
+    // console.log(disclosure_id);
     // Handle emails if present
     const emailIds = [];
     if (Array.isArray(emails)) {
@@ -197,7 +218,7 @@ exports.submitDisclosure = async (req, res) => {
         );
         const email_id = eidResult[0].id;
         emailIds.push(email_id);
-        console.log(emailIds);
+        // console.log(emailIds);
         // Insert IGNORE into disclosure_emails done earlier
         await connection.query(
           'INSERT IGNORE INTO disclosure_emails (disclosure_id, email_id) VALUES (?, ?)',
@@ -205,12 +226,23 @@ exports.submitDisclosure = async (req, res) => {
         );
       }
     }
-
+    console.log(emailIds);
     // Update disclosures.email_ids with comma separated IDs
     if (emailIds.length > 0) {
       await connection.query(
         'UPDATE disclosures SET email_ids = ? WHERE id = ?',
         [emailIds.join(','), disclosure_id]
+      );
+    }
+    if (file) {
+      if (file.mimetype !== 'application/pdf') {
+        await connection.rollback();
+        return res.status(400).json({ status: 'error', status_code: 400, message: 'Only PDF allowed' });
+      }
+      await connection.query(
+        `INSERT INTO disclosure_files (disclosure_id, filename, mimetype, size_bytes, data)
+     VALUES (?, ?, ?, ?, ?)`,
+        [disclosure_id, file.originalname, file.mimetype, file.size, file.buffer]
       );
     }
     // (rest of your existing email handling and commit logic)
@@ -222,7 +254,8 @@ exports.submitDisclosure = async (req, res) => {
       status_code: 200,
       resolved_type_name: type_name,
       disclosure_id,
-      emails: emails || []
+      emails: emails || [],
+      file: file ? { filename: file.originalname, size: file.size } : null
     });
   } catch (err) {
     await connection.rollback();

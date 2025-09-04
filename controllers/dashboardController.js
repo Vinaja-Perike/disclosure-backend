@@ -79,15 +79,76 @@ exports.getDisclosureTypes = async (req, res) => {
   }
 };
 
+//OG
+// exports.getAllDisclosures = async (req, res) => {
+//   const { din } = req.params;
+//   try {
+//     const [rows] = await pool.query(
+//       'SELECT * FROM disclosures WHERE din = ?',
+//       [din]
+//     );
+//     res.json(rows);
+//   } catch (err) {
+//     res.status(500).json({ message: err.message });
+//   }
+// };
+
 exports.getAllDisclosures = async (req, res) => {
   const { din } = req.params;
   try {
+    // 1) Fetch disclosures for DIN
     const [rows] = await pool.query(
       'SELECT * FROM disclosures WHERE din = ?',
       [din]
     );
-    res.json(rows);
+
+    if (!rows.length) {
+      return res.status(200).json([]);
+    }
+
+    // 2) Gather disclosure IDs
+    const ids = rows.map(r => r.id);
+
+    // 3) Fetch files for these disclosures
+    const placeholders = ids.map(() => '?').join(',');
+    const [files] = await pool.query(
+      `SELECT id, disclosure_id, filename, mimetype, size_bytes, data
+       FROM disclosure_files
+       WHERE disclosure_id IN (${placeholders})`,
+      ids
+    );
+
+    // 4) Index files by disclosure_id (assume one file per disclosure; adjust if multiple)
+    const fileByDisclosureId = new Map();
+    for (const f of files) {
+      fileByDisclosureId.set(f.disclosure_id, f);
+    }
+
+    // 5) Build response with base64-encoded data
+    const response = rows.map(r => {
+      const f = fileByDisclosureId.get(r.id);
+      if (!f) {
+        return {
+          ...r,
+          file: null
+        };
+      }
+      // Convert BLOB Buffer -> base64
+      const base64 = Buffer.isBuffer(f.data) ? f.data.toString('base64') : null;
+      return {
+        ...r,
+        file: {
+          id: f.id,
+          filename: f.filename,
+          mimetype: f.mimetype,
+          size_bytes: f.size_bytes,
+          base64 // consider very large; for big files, prefer a download route
+        }
+      };
+    });
+
+    return res.status(200).json(response);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
   }
 };

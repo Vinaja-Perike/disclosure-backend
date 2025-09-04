@@ -14,5 +14,5 @@ app.use('/auth', authRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use('/disclosures', disclosuresRoutes);
 app.listen(port, () => {
-  console.log('Server running on port 3000');
+  console.log(`Server running on port ${port}`);
 });
