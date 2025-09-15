@@ -127,39 +127,60 @@ const pool = require('../db');
 // };
 
 exports.submitDisclosure = async (req, res) => {
-  const {
+  let {
     director_id,
     type_id,
     recipient_id,
     details,
+    emails,
     din,
     director_name,
     company_name,
     director_position
   } = req.body;
   const file = req.file;
-  let { emails } = req.body;
+  // Get raw value once
+  // const emailsRaw = req.body?.emails;
 
-  if (typeof emails === 'string') {
+  // Normalize into an array variable named emails
+  let emailsRaw;
+  // Normalize emails to array
+  // const emailsRaw = req.body?.emails;
+  if (Array.isArray(emails)) {
+    emailsRaw = emails;
+  } else if (typeof emails === 'string') {
     const trimmed = emails.trim();
-    if (trimmed.startsWith('[')) {
+
+    let parsed = null;
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
       try {
-        const parsed = JSON.parse(trimmed);
-        emails = Array.isArray(parsed) ? parsed : [];
-      } catch {
-        emails = trimmed ? [trimmed] : [];
-      }
-    } else {
-      emails = trimmed ? [trimmed] : [];
+        parsed = JSON.parse(trimmed);
+      } catch (_) { }
     }
-  } else if (!Array.isArray(emails)) {
+
+    if (Array.isArray(parsed)) {
+      emails = parsed;
+    } else if (trimmed.includes(',')) {
+      emails = trimmed.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (trimmed.length) {
+      emails = [trimmed];
+    } else {
+      emails = [];
+    }
+  } else if (emails == null) {
     emails = [];
+  } else {
+    emails = [String(emails)];
   }
+
+  // Clean + dedupe
   emails = Array.from(new Set(
-    emails
-      .map(e => String(e).trim().toLowerCase())
-      .filter(Boolean)
+    emails.map(e => e.toLowerCase()).filter(Boolean)
   ));
+
+  console.log('Normalized emails:', emails);
+
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -427,3 +448,141 @@ exports.getFieldsByDisclosureTypeId = async (req, res) => {
     });
   }
 };
+
+// POST /disclosures/:id/submit  (multipart/form-data; single('pdf'))
+exports.submitIncompleteDisclosure = async (req, res) => {
+  const disclosureId = Number(req.params.id);
+  // Normalize body values (multipart sends strings)
+  let {
+    director_id,
+    type_id,
+    recipient_id,
+    details,
+    emails,
+    din,
+    director_name,
+    company_name,
+    director_position
+  } = req.body;
+  const file = req.file;
+  console.log('Disclosure ID:',disclosureId);
+  console.log('Raw emails:', emails);
+  console.log('File:', file); 
+  const parseNum = v => (v == null || String(v).trim() === '' ? null : Number(v));
+
+  const typeIdNum = parseNum(type_id);
+  const recipientIdNum = parseNum(recipient_id);
+  let emailsRaw;
+  // Normalize emails to array
+  // const emailsRaw = req.body?.emails;
+  if (Array.isArray(emails)) {
+    emailsRaw = emails;
+  } else if (typeof emails === 'string') {
+    const trimmed = emails.trim();
+    let parsed;
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+      (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+      try { parsed = JSON.parse(trimmed); } catch { }
+    }
+    if (Array.isArray(parsed)) emails = parsed;
+    else if (trimmed.includes(',')) emails = trimmed.split(',').map(s => s.trim()).filter(Boolean);
+    else emails = trimmed ? [trimmed] : [];
+  } else if (!Array.isArray(emails)) {
+    emails = [];
+  }
+  emails = Array.from(new Set(emails.map(e => e.toLowerCase()).filter(Boolean)));
+  if (file && file.mimetype !== 'application/pdf') {
+    return res.status(400).json({ status: 'error', status_code: 400, message: 'Only PDF allowed' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // Resolve type_name if provided/changed
+    let type_name = null;
+    if (typeIdNum) {
+      const [types] = await connection.query('SELECT type_name FROM disclosure_types WHERE id = ?', [typeIdNum]);
+      if (!types.length) {
+        await connection.rollback();
+        return res.status(400).json({ status: 'error', status_code: 400, message: 'Invalid disclosure type.' });
+      }
+      type_name = types.type_name;
+    }
+
+    // Update the pending disclosure in place
+    const [upd] = await connection.query(
+      `UPDATE disclosures
+         SET status = 'submitted',
+             director_id = COALESCE(?, director_id),
+             type_id = COALESCE(?, type_id),
+             type_name = COALESCE(?, type_name),
+             recipient_id = COALESCE(?, recipient_id),
+             details = COALESCE(?, details),
+             din = COALESCE(?, din),
+             director_name = COALESCE(?, director_name),
+             company_name = COALESCE(?, company_name),
+             director_position = COALESCE(?, director_position)
+       WHERE id = ? AND status = 'pending'`,
+      [
+        director_id ?? null,
+        typeIdNum, type_name,
+        recipientIdNum,
+        details ?? null,
+        din ?? null,
+        director_name ?? null,
+        company_name ?? null,
+        director_position ?? null,
+        disclosureId
+      ]
+    );
+
+    if (upd.affectedRows === 0) {
+      await connection.rollback();
+      return res.status(404).json({ status: 'error', status_code: 404, message: 'Pending disclosure not found or already submitted.' });
+    }
+
+    // Emails: upsert and link
+    const emailIds = [];
+    if (emails.length > 0) {
+      for (const email of emails) {
+        await connection.query('INSERT IGNORE INTO emails (email) VALUES (?)', [email]);
+        const [eidRows] = await connection.query('SELECT id FROM emails WHERE email = ?', [email]);
+        if (!eidRows.length) continue;
+        const email_id = eidRows.id;
+        emailIds.push(email_id);
+        await connection.query(
+          'INSERT IGNORE INTO disclosure_emails (disclosure_id, email_id) VALUES (?, ?)',
+          [disclosureId, email_id]
+        );
+      }
+      await connection.query('UPDATE disclosures SET email_ids = ? WHERE id = ?', [emailIds.join(','), disclosureId]);
+    }
+    // PDF attach
+    if (file) {
+      await connection.query(
+        `INSERT INTO disclosure_files (disclosure_id, filename, mimetype, size_bytes, data)
+         VALUES (?, ?, ?, ?, ?)`,
+        [disclosureId, file.originalname, file.mimetype, file.size, file.buffer]
+      );
+    }
+
+    await connection.commit();
+
+    return res.status(200).json({
+      status: 'success',
+      status_code: 200,
+      message: 'Pending disclosure submitted.',
+      disclosure_id: disclosureId,
+      type_name: type_name || undefined,
+      emails,
+      file: file ? { filename: file.originalname, size: file.size } : null
+    });
+  } catch (err) {
+    await connection.rollback();
+    return res.status(500).json({ status: 'error', status_code: 500, message: err.message });
+  } finally {
+    connection.release();
+  }
+};
+

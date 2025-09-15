@@ -8,6 +8,7 @@ router.post('/submit', upload.single('file'),disclosuresController.submitDisclos
 router.post('/submit-pending-disclosure', disclosuresController.submitPeningDisclosure);
 router.post('/get-emails', disclosuresController.getEmailsByDisclosureId);
 router.post('/get-fields', disclosuresController.getFieldsByDisclosureTypeId);
+router.post('/:id/submit-incomplete-disclosure', upload.single('file'), disclosuresController.submitIncompleteDisclosure);
 
 
 
